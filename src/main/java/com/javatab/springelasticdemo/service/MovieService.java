@@ -2,6 +2,7 @@ package com.javatab.springelasticdemo.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.javatab.springelasticdemo.model.Movie;
+import lombok.RequiredArgsConstructor;
 import org.elasticsearch.action.get.GetRequest;
 import org.elasticsearch.action.get.GetResponse;
 import org.elasticsearch.action.index.IndexRequest;
@@ -12,11 +13,15 @@ import org.elasticsearch.action.update.UpdateRequest;
 import org.elasticsearch.action.update.UpdateResponse;
 import org.elasticsearch.client.RequestOptions;
 import org.elasticsearch.client.RestHighLevelClient;
+import org.elasticsearch.index.get.GetResult;
 import org.elasticsearch.index.query.QueryBuilder;
 import org.elasticsearch.index.query.QueryBuilders;
 import org.elasticsearch.search.SearchHit;
 import org.elasticsearch.search.builder.SearchSourceBuilder;
+import org.springframework.data.elasticsearch.client.reactive.ReactiveElasticsearchClient;
 import org.springframework.stereotype.Service;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -25,80 +30,58 @@ import java.util.Map;
 import java.util.UUID;
 
 @Service
+@RequiredArgsConstructor
 public class MovieService {
 
-    private RestHighLevelClient client;
+    public static final String MOVIE_STORE_INDEX = "movie-store";
+    private final ReactiveElasticsearchClient client;
+    private final ObjectMapper objectMapper;
 
-    private ObjectMapper objectMapper;
-
-    public MovieService(RestHighLevelClient client, ObjectMapper objectMapper) {
-        this.client = client;
-        this.objectMapper = objectMapper;
+    public Mono<IndexResponse> createMovieDocument(Movie movie) {
+        String id = UUID.randomUUID().toString();
+        Map documentMapper = objectMapper.convertValue(movie,
+                Map.class);
+        return client.index(indexRequest -> indexRequest.index("movie-store").id(id).source(documentMapper));
     }
 
-    public String createMovieDocument(Movie movie) throws IOException {
-        UUID uuid = UUID.randomUUID();
-        movie.setId(uuid.toString());
-
-        Map documentMapper = objectMapper.convertValue(movie, Map.class);
-
-        IndexRequest indexRequest = new IndexRequest("movie-document").id(movie.getId())
-                .source(documentMapper);
-
-        IndexResponse indexResponse = client.index(indexRequest, RequestOptions.DEFAULT);
-
-        return indexResponse
-                .getResult()
-                .name();
+    public Mono<Movie> findById(String id) {
+        GetRequest getRequest = new GetRequest("movie-store", id);
+        Mono<Map<String, Object>> resultMap = client.get(getRequest).map(GetResult::getSource);
+        return Mono.just(objectMapper
+                .convertValue(resultMap, Movie.class));
     }
 
-    public Movie findById(String id) throws IOException {
-        GetRequest getRequest = new GetRequest("movie-document", id);
-
-        GetResponse getResponse = client.get(getRequest, RequestOptions.DEFAULT);
-
-        Map<String, Object> resultMap = getResponse.getSource();
-
-        return objectMapper
-                .convertValue(resultMap, Movie.class);
-
-
+    public Mono<Movie> findByMovieName(String movieName) {
+        GetRequest getRequest = new GetRequest("movie-store", movieName);
+        Mono<Map<String, Object>> resultMap = client.get(getRequest).map(GetResult::getSource);
+        return Mono.just(objectMapper
+                .convertValue(resultMap, Movie.class));
     }
 
-    public String updateMovie(Movie movie) throws IOException {
-
-        Movie resultDocument = findById(movie.getId());
-
-        UpdateRequest updateRequest = new UpdateRequest(
-                "movie-document",
-                resultDocument.getId());
-
+    public Mono<UpdateResponse> updateMovie(Movie movie) {
         Map documentMapper =
                 objectMapper.convertValue(movie, Map.class);
+        UpdateRequest updateRequest = new UpdateRequest(
+                MOVIE_STORE_INDEX,
+                movie.getId())
+                .doc(documentMapper);
 
-        updateRequest.doc(documentMapper);
-
-        UpdateResponse updateResponse =
-                client.update(updateRequest, RequestOptions.DEFAULT);
-
-        return updateResponse
-                .getResult()
-                .name();
+        return client.update(updateRequest);
     }
 
-    public List<Movie> findAll() throws IOException {
+    public Flux<Movie> findAll() {
         SearchRequest searchRequest = new SearchRequest();
         SearchSourceBuilder searchSourceBuilder = new SearchSourceBuilder();
         searchSourceBuilder.query(QueryBuilders.matchAllQuery());
         searchRequest.source(searchSourceBuilder);
 
-        SearchResponse searchResponse =
-                client.search(searchRequest, RequestOptions.DEFAULT);
+        Flux<SearchHit> searchResponse =
+                client.search(searchRequest);
 
         return getSearchResult(searchResponse);
     }
 
-    public List<Movie> searchByGenre(String genre) throws IOException {
+    public Flux<Movie> searchByGenre(String genre) {
         SearchRequest searchRequest = new SearchRequest();
         SearchSourceBuilder searchSourceBuilder = new SearchSourceBuilder();
 
@@ -107,25 +90,14 @@ public class MovieService {
 
         searchRequest.source(searchSourceBuilder);
 
-        SearchResponse response =
-                client.search(searchRequest, RequestOptions.DEFAULT);
+        Flux<SearchHit> response =
+                client.search(searchRequest);
 
         return getSearchResult(response);
     }
 
-    private List<Movie> getSearchResult(SearchResponse response) {
+    private Flux<Movie> getSearchResult(Flux<SearchHit> response) {
+        return response.map(documentField -> objectMapper.convertValue(documentField.getSourceAsMap(), Movie.class));
 
-        SearchHit[] searchHit = response.getHits().getHits();
-
-        List<Movie> movies = new ArrayList<>();
-
-        for (SearchHit hit : searchHit){
-            movies
-                    .add(objectMapper
-                            .convertValue(hit
-                                    .getSourceAsMap(), Movie.class));
-        }
-
-        return movies;
     }
 }
